@@ -1,0 +1,1259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#111111">
+<!-- Inline icon: one request fewer, and nothing is fetched for it. -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' fill='%23111111'/%3E%3Crect x='2' y='2' width='12' height='12' fill='none' stroke='%23FF5500' stroke-width='2'/%3E%3Crect x='6' y='6' width='4' height='4' fill='%23FF5500'/%3E%3C/svg%3E">
+<meta name="description" content="Leaf classifier running entirely in the browser on the phone: ONNX Runtime Web + leaf_model.onnx. Camera, upload and a self-test against check_expected.json.">
+<title>LEAF CLASSIFIER / EX08</title>
+<style>
+  /* ------------------------------------------------------------------ layout
+     Utilitarian blocky style: no rounded corners anywhere, no gradients, no
+     shadows, no transparency effects. Colour carries meaning only.
+     ------------------------------------------------------------------ */
+  :root {
+    --bg: #111111;
+    --text: #F4F4F0;
+    --panel: #222222;
+    --line: #333333;
+    --dim: #8A8A85;
+    --accent: #FF5500;      /* safety orange - primary actions */
+    --accent-press: #C43E00;
+    --amber: #FFB000;       /* diagnostics actions */
+    --amber-press: #C48700;
+    --ok: #6BFF7A;
+    --bad: #FF4D4D;
+  }
+  *, *::before, *::after { border-radius: 0px !important; box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+    background: var(--bg);
+    color: var(--text);
+    font-family: ui-monospace, "JetBrains Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    font-size: 15px;
+    line-height: 1.45;
+    font-variant-numeric: tabular-nums;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 10px; }
+  header.masthead { border: 2px solid var(--line); background: var(--panel); padding: 12px 14px; margin: 10px 0; }
+  h1 { margin: 0; font-size: 19px; letter-spacing: 0.16em; text-transform: uppercase; }
+  h1 span { color: var(--accent); }
+  .meta { margin-top: 6px; font-size: 12px; color: var(--dim); letter-spacing: 0.04em; }
+  section { border: 1px solid var(--line); background: var(--panel); padding: 14px; margin: 10px 0; }
+  h2 {
+    margin: 0 0 12px; padding-bottom: 6px; font-size: 12px; font-weight: 700;
+    letter-spacing: 0.18em; text-transform: uppercase; color: var(--dim);
+    border-bottom: 1px solid var(--line);
+  }
+  h2 b { color: var(--text); font-weight: 700; }
+
+  /* ------------------------------------------------------------------ status */
+  #status {
+    border: 1px solid var(--line); border-left: 5px solid var(--dim);
+    background: #1A1A1A; padding: 10px 12px; margin: 10px 0; font-size: 13px; min-height: 20px;
+  }
+  #status.ok  { border-left-color: var(--ok); }
+  #status.err { border-left-color: var(--accent); color: #FFD9C7; }
+  #status.warn{ border-left-color: var(--amber); color: #FFE7B8; }
+
+  /* ------------------------------------------------------------------ camera */
+  #video {
+    /* contain, not cover: the preview must show the WHOLE frame, because that is what toTensor()
+       takes its central square out of. aspect-ratio keeps the box from jumping the moment the
+       camera attaches; JS replaces it with the real videoWidth/videoHeight when the stream starts. */
+    display: block; width: 100%; height: auto; max-height: 58vh; aspect-ratio: 3 / 4;
+    background: #000; border: 2px solid var(--line); object-fit: contain;
+  }
+  .capture-row { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-start; margin-top: 12px; }
+  .see { flex: 0 0 auto; }
+  /* exactly 2x the 96 x 96 tensor: an integer scale stays crisp with image-rendering: pixelated,
+     a 116 px box would stretch it by 1.208 and give an uneven pixel grid */
+  .see canvas {
+    display: block; width: 192px; height: 192px; image-rendering: pixelated;
+    background: #000; border: 1px solid var(--line);
+  }
+  .see p { margin: 6px 0 0; font-size: 10px; letter-spacing: 0.1em; color: var(--dim); text-transform: uppercase; max-width: 192px; }
+  .note { margin: 10px 0 0; font-size: 12px; color: var(--dim); }
+
+  /* ------------------------------------------------------------------ buttons */
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 12px; }
+  button, .filelabel, select {
+    font: inherit; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em;
+    min-height: 46px; padding: 10px 14px; cursor: pointer;
+    background: var(--accent); color: #000; border: 2px solid var(--accent);
+  }
+  button:active:not(:disabled), .filelabel:active { background: var(--accent-press); border-color: var(--accent-press); }
+  button:focus-visible, .filelabel:focus-visible, select:focus-visible { outline: 3px solid var(--amber); outline-offset: 2px; }
+  button.amber { background: var(--amber); border-color: var(--amber); }
+  button.amber:active:not(:disabled) { background: var(--amber-press); border-color: var(--amber-press); }
+  button.ghost { background: #1A1A1A; color: var(--text); border-color: var(--line); }
+  button.ghost:active:not(:disabled) { background: #000; }
+  button:disabled { background: #1A1A1A; color: #6A6A66; border-color: #2A2A2A; cursor: not-allowed; }
+  .filelabel { display: inline-flex; align-items: center; }
+  input[type="file"] { position: absolute; width: 1px; height: 1px; opacity: 0; overflow: hidden; }
+  input[type="file"]:focus-visible + .filelabel { outline: 3px solid var(--amber); outline-offset: 2px; }
+  /* min-width:0 matters: a flex item will not shrink below its content by default, and a <select>
+     is as wide as its longest <option>, which pushed the page into sideways scrolling on a 375 px
+     phone. max-width:100% plus min-width:0 keeps it inside the viewport and ellipsises the label. */
+  select {
+    background: #1A1A1A; color: var(--text); border: 2px solid var(--line);
+    text-transform: none; letter-spacing: 0; font-weight: 400;
+    flex: 1 1 160px; min-width: 0; max-width: 100%; text-overflow: ellipsis; overflow: hidden;
+  }
+  /* the camera-failure path points at the upload control instead of only describing it */
+  .flash { outline: 3px solid var(--amber); outline-offset: 2px; }
+
+  /* ------------------------------------------------------------------ output */
+  .row { display: grid; grid-template-columns: 92px 1fr 62px; gap: 10px; align-items: center; margin: 7px 0; }
+  .row .name { font-size: 13px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .track { height: 22px; background: #151515; border: 1px solid var(--line); }
+  .fill { height: 100%; width: 0%; background: #4A4A46; }
+  .row.top .fill { background: var(--accent); }
+  .row.top .name { color: var(--accent); font-weight: 700; }
+  .row .val { text-align: right; font-size: 14px; }
+  #headline { margin: 10px 0 0; font-size: 13px; color: var(--dim); }
+  #headline b { color: var(--text); }
+
+  /* ------------------------------------------------------------------ tables */
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { padding: 6px 8px; text-align: right; border-bottom: 1px solid var(--line); }
+  th:first-child, td:first-child { text-align: left; }
+  th { color: var(--dim); font-weight: 700; font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+  td.url, th.url { text-align: left; word-break: break-all; font-size: 12px; }
+  .badge { display: inline-block; padding: 3px 10px; font-weight: 700; letter-spacing: 0.12em; color: #000; background: var(--dim); }
+  .badge.pass { background: var(--ok); }
+  .badge.fail { background: var(--bad); }
+  dl.diag { display: grid; grid-template-columns: 150px 1fr; gap: 4px 12px; margin: 0; font-size: 13px; }
+  dl.diag dt { color: var(--dim); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; padding-top: 2px; }
+  dl.diag dd { margin: 0; word-break: break-word; }
+
+  /* ------------------------------------------------------------------ qr */
+  #qr { background: #F4F4F0; border: 6px solid #F4F4F0; display: block; image-rendering: pixelated; }
+  .qrwrap { display: flex; flex-wrap: wrap; gap: 16px; align-items: flex-start; }
+  a { color: var(--amber); }
+  footer { padding: 12px 4px 26px; font-size: 12px; color: var(--dim); }
+  code { color: var(--text); }
+</style>
+</head>
+<body>
+<main>
+
+<header class="masthead">
+  <h1>Leaf classifier <span>/ EX08</span></h1>
+  <div class="meta" id="modelMeta">model: not loaded</div>
+</header>
+
+<div id="status" role="status" aria-live="polite">Starting: loading the runtime and the model.</div>
+
+<!-- 01 ---------------------------------------------------- live camera ------ -->
+<section>
+  <h2>01 &nbsp;Live camera</h2>
+  <video id="video" playsinline muted autoplay aria-label="Camera view"></video>
+  <div class="capture-row">
+    <div class="see">
+      <canvas id="see" width="96" height="96" aria-label="Exactly what the model receives"></canvas>
+      <p id="seeCaption">What the model sees: central square, 96&#215;96</p>
+    </div>
+    <p class="note" id="cameraNote">
+      The camera is only started when you press START CAMERA. Frames stay in this browser: they are read
+      from the <code>&lt;video&gt;</code> element into a canvas and never sent anywhere. If the camera is
+      refused or missing, use UPLOAD IMAGE below.
+    </p>
+  </div>
+  <div class="controls">
+    <button id="startBtn" type="button">Start camera</button>
+    <button id="stopBtn" type="button" class="ghost" disabled>Stop camera</button>
+  </div>
+</section>
+
+<!-- 02 ---------------------------------------------------- still images ---- -->
+<section>
+  <h2>02 &nbsp;Still image</h2>
+  <div class="controls" style="margin-top:0">
+    <input type="file" id="file" accept="image/jpeg,image/png,image/webp" aria-label="Upload an image file">
+    <label class="filelabel" for="file" id="fileLabel">Upload image</label>
+    <button id="checkBtn" type="button" class="amber">Run check_image.jpg</button>
+    <button id="verifyBtn" type="button" class="amber">Verify check_image.jpg</button>
+  </div>
+  <p class="note">
+    Allowed uploads: <code>image/jpeg</code>, <code>image/png</code>, <code>image/webp</code>, between 1 byte
+    and 15 MB. RUN CHECK IMAGE loads the reference photo that ships with this page. VERIFY compares its
+    probabilities with <code>check_expected.json</code>, the numbers the notebook produced for the same file.
+  </p>
+</section>
+
+<!-- 03 ---------------------------------------------------- output ---------- -->
+<section>
+  <h2>03 &nbsp;Output</h2>
+  <div id="bars"></div>
+  <p id="headline">No inference yet.</p>
+</section>
+
+<!-- 04 ---------------------------------------------------- self-test ------- -->
+<section>
+  <h2>04 &nbsp;Self-test vs the notebook</h2>
+  <div id="verifyBox"><p class="note" style="margin-top:0">Not run yet.</p></div>
+</section>
+
+<!-- 05 ---------------------------------------------------- diagnostics ----- -->
+<section>
+  <h2>05 &nbsp;Diagnostics</h2>
+  <dl class="diag">
+    <dt>Model</dt><dd id="dModel">&#8212;</dd>
+    <dt>Session</dt><dd id="dSession">not created</dd>
+    <dt>Engine</dt><dd id="dEngine">&#8212;</dd>
+    <dt>Input tensor</dt><dd id="dTensor">&#8212;</dd>
+    <dt>Last inference</dt><dd id="dInfer">&#8212;</dd>
+    <dt>Inferences run</dt><dd id="dFrames">0</dd>
+    <dt>Cross-origin isolated</dt><dd id="dCoi">&#8212;</dd>
+  </dl>
+  <h2 style="margin-top:16px">URLs this page loaded</h2>
+  <table>
+    <thead><tr><th class="url">URL</th><th>Bytes</th><th class="url">What it is</th></tr></thead>
+    <tbody id="urlTable"><tr><td class="url" colspan="3">none recorded yet</td></tr></tbody>
+  </table>
+  <p class="note">
+    An uploaded file is turned into a Blob URL by <code>URL.createObjectURL</code>, decoded by the browser and
+    read into a canvas here; it is never posted anywhere (a <code>POST</code> appears nowhere in this file).
+    The only network requests this page makes are the ones in the table: the runtime from a CDN, the model, and
+    the small JSON/JPEG files that sit next to this page. There is no backend and no telemetry.
+  </p>
+</section>
+
+<!-- 06 ---------------------------------------------------- qr -------------- -->
+<section>
+  <h2>06 &nbsp;Open this page on a phone</h2>
+  <div class="qrwrap">
+    <div>
+      <canvas id="qr" width="0" height="0" aria-label="QR code of this page URL"></canvas>
+      <p class="note" id="qrNote" style="margin-top:8px">QR generated in this browser (no QR service is contacted).</p>
+    </div>
+    <p class="note" style="flex:1 1 220px;margin-top:0">
+      Encoded address:<br>
+      <a id="qrLink" href="#" rel="noopener"><span id="qrText">&#8212;</span></a>
+    </p>
+  </div>
+</section>
+
+<footer>
+  Task 2f, Exercise 8 (MPA/MLR). One file, plain JavaScript, ONNX Runtime Web with the WebAssembly
+  execution provider, the model from <code>leaf_model.onnx</code> and the preprocessing from
+  <code>model_info.json</code>. Nothing is uploaded: the inference runs on the phone itself.
+</footer>
+
+</main>
+
+<script>
+/* Minimal QR code encoder, written for this page so that no QR web service is contacted.
+   Byte mode only, error-correction level M, versions 1-10 - the 216 data codewords of version 10
+   minus the 4-bit mode indicator and its 16-bit character counter hold 213 bytes, which is more
+   than any URL this page can be served from. Following ISO/IEC 18004: finder, timing, alignment
+   and format/version information, Reed-Solomon error correction over GF(256), and the mask whose
+   penalty score (the four standard rules) is the lowest. */
+"use strict";
+var QR = (function () {
+  // For ECC level M, per version: [EC codewords per block, block count 1, data codewords 1, block count 2, data codewords 2]
+  var ECB_M = {
+    1: [10, 1, 16, 0, 0],  2: [16, 1, 28, 0, 0],  3: [26, 1, 44, 0, 0],  4: [18, 2, 32, 0, 0],
+    5: [24, 2, 43, 0, 0],  6: [16, 4, 27, 0, 0],  7: [18, 4, 31, 0, 0],  8: [22, 2, 38, 2, 39],
+    9: [22, 3, 36, 2, 37], 10: [26, 4, 43, 1, 44]
+  };
+  var ALIGN = { 1: [], 2: [6, 18], 3: [6, 22], 4: [6, 26], 5: [6, 30], 6: [6, 34],
+                7: [6, 22, 38], 8: [6, 24, 42], 9: [6, 26, 46], 10: [6, 28, 50] };
+  var MASKS = [
+    function (y, x) { return (y + x) % 2 === 0; },
+    function (y) { return y % 2 === 0; },
+    function (y, x) { return x % 3 === 0; },
+    function (y, x) { return (y + x) % 3 === 0; },
+    function (y, x) { return (Math.floor(y / 2) + Math.floor(x / 3)) % 2 === 0; },
+    function (y, x) { return (y * x) % 2 + (y * x) % 3 === 0; },
+    function (y, x) { return ((y * x) % 2 + (y * x) % 3) % 2 === 0; },
+    function (y, x) { return ((y + x) % 2 + (y * x) % 3) % 2 === 0; }
+  ];
+
+  // GF(256) with the QR primitive polynomial 0x11D.
+  var EXP = new Uint8Array(512), LOG = new Uint8Array(256);
+  (function () {
+    var value = 1;
+    for (var i = 0; i < 255; i++) { EXP[i] = value; LOG[value] = i; value <<= 1; if (value & 0x100) value ^= 0x11D; }
+    for (var j = 255; j < 512; j++) EXP[j] = EXP[j - 255];
+  })();
+  function gfMul(a, b) { return (a === 0 || b === 0) ? 0 : EXP[LOG[a] + LOG[b]]; }
+
+  function rsGenerator(degree) {                    // product of (x - a^i), high power first
+    var g = [1];
+    for (var i = 0; i < degree; i++) {
+      var next = new Array(g.length + 1);
+      for (var k = 0; k < next.length; k++) next[k] = 0;
+      for (var j = 0; j < g.length; j++) { next[j] ^= g[j]; next[j + 1] ^= gfMul(g[j], EXP[i]); }
+      g = next;
+    }
+    return g;
+  }
+  function rsRemainder(data, generator) {           // polynomial long division, remainder only
+    var res = new Uint8Array(generator.length - 1);
+    for (var i = 0; i < data.length; i++) {
+      var factor = data[i] ^ res[0];
+      res.copyWithin(0, 1);
+      res[res.length - 1] = 0;
+      for (var j = 0; j < res.length; j++) res[j] ^= gfMul(factor, generator[j + 1]);
+    }
+    return res;
+  }
+
+  function bitPush(list, value, length) { for (var i = length - 1; i >= 0; i--) list.push((value >>> i) & 1); }
+
+  // mode indicator 0100 + character count + payload + terminator + padding.
+  // The counter is 8 bits in byte mode for versions 1-9 and 16 bits for versions 10-26
+  // (ISO/IEC 18004 Table 3), so the width arrives from the caller instead of being assumed.
+  function dataCodewords(bytes, count, countBits) {
+    var bits = [], capacity = count * 8;
+    bitPush(bits, 4, 4);
+    bitPush(bits, bytes.length, countBits);
+    for (var i = 0; i < bytes.length; i++) bitPush(bits, bytes[i], 8);
+    bitPush(bits, 0, Math.min(4, capacity - bits.length));
+    while (bits.length % 8 !== 0) bits.push(0);
+    var codewords = new Uint8Array(count), pad = 0xEC;
+    for (var b = 0; b < count; b++) {
+      if (b < bits.length / 8) {
+        var value = 0;
+        for (var k = 0; k < 8; k++) value = (value << 1) | bits[b * 8 + k];
+        codewords[b] = value;
+      } else { codewords[b] = pad; pad ^= 0xEC ^ 0x11; }
+    }
+    return codewords;
+  }
+
+  // The five numbers of an ECB_M row are, in order: EC codewords per block, how many blocks the first
+  // group has, data codewords in each of those, the same two for a possible second group (a version
+  // whose blocks do not divide evenly has two group sizes - ISO/IEC 18004 Table 9). The data words are
+  // split into those blocks, then written out one codeword per block in turn, and the Reed-Solomon
+  // remainders of the blocks are appended the same way. That ordering is what every decoder assumes.
+  function interleave(codewords, table) {
+    var ecPerBlock = table[0];
+    var groups = [{ blocks: table[1], dataPerBlock: table[2] }, { blocks: table[3], dataPerBlock: table[4] }];
+    var blocks = [], offset = 0;
+    groups.forEach(function (group) {
+      for (var n = 0; n < group.blocks; n++) {
+        blocks.push(codewords.subarray(offset, offset + group.dataPerBlock));
+        offset += group.dataPerBlock;
+      }
+    });
+    var generator = rsGenerator(ecPerBlock);
+    var ec = blocks.map(function (block) { return rsRemainder(block, generator); });
+    var out = [], longest = 0;
+    blocks.forEach(function (b) { longest = Math.max(longest, b.length); });
+    for (var i = 0; i < longest; i++) blocks.forEach(function (b) { if (i < b.length) out.push(b[i]); });
+    for (var j = 0; j < ec[0].length; j++) ec.forEach(function (e) { out.push(e[j]); });
+    return out;
+  }
+
+  function newFrame(version) {
+    var size = 17 + 4 * version;
+    return { version: version, size: size, dark: new Uint8Array(size * size), fn: new Uint8Array(size * size) };
+  }
+  function put(frame, x, y, on, reserve) {
+    if (x < 0 || y < 0 || x >= frame.size || y >= frame.size) return;
+    frame.dark[y * frame.size + x] = on ? 1 : 0;
+    if (reserve) frame.fn[y * frame.size + x] = 1;
+  }
+  function isReserved(frame, x, y) {
+    return x < 0 || y < 0 || x >= frame.size || y >= frame.size || frame.fn[y * frame.size + x] === 1;
+  }
+
+  function drawFunctionPatterns(frame) {
+    var size = frame.size, i;
+    for (i = 0; i < size; i++) {                       // timing patterns
+      if (!isReserved(frame, 6, i)) put(frame, 6, i, i % 2 === 0, true);
+      if (!isReserved(frame, i, 6)) put(frame, i, 6, i % 2 === 0, true);
+    }
+    [[0, 0], [size - 7, 0], [0, size - 7]].forEach(function (origin) {   // finders + separators
+      for (var dy = -1; dy <= 7; dy++) for (var dx = -1; dx <= 7; dx++) {
+        var inside = dx >= 0 && dx <= 6 && dy >= 0 && dy <= 6, ring = Math.max(Math.abs(dx - 3), Math.abs(dy - 3));
+        put(frame, origin[0] + dx, origin[1] + dy, inside && ring !== 2, true);
+      }
+    });
+    (ALIGN[frame.version] || []).forEach(function (rowCentre) {          // alignment patterns
+      ALIGN[frame.version].forEach(function (colCentre) {
+        var touchesFinder = (rowCentre <= 8 && colCentre <= 8) || (rowCentre <= 8 && colCentre >= size - 9) ||
+                            (rowCentre >= size - 9 && colCentre <= 8);
+        if (touchesFinder) return;
+        for (var dy = -2; dy <= 2; dy++) for (var dx = -2; dx <= 2; dx++) {
+          put(frame, colCentre + dx, rowCentre + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1, true);
+        }
+      });
+    });
+    // The format and version areas are reserved by DRAWING them, not by repeating the rule that
+    // places them: a rule written twice drifts, and every module only one of the two copies knows
+    // about steals or loses a codeword bit - Reed-Solomon then has to paper over it, and at version
+    // 1 (five correctable bytes out of 26) it stops working. Mask 0 here is a placeholder; encode()
+    // redraws these modules with the mask it really picked, after the masking step.
+    drawFormatBits(frame, 0);
+    drawVersionBits(frame);
+  }
+
+  // Written twice per symbol: once with mask 0 from drawFunctionPatterns (so the codeword layout
+  // knows which modules are taken) and once with the chosen mask, after masking, as the real value.
+  function drawFormatBits(frame, mask) {
+    var data = (0 << 3) | mask, rem = data << 10;       // 00 = ECC level M
+    for (var i = 14; i >= 10; i--) if ((rem >>> i) & 1) rem ^= 0x537 << (i - 10);
+    var bits = ((data << 10) | rem) ^ 0x5412, size = frame.size;
+    for (i = 0; i <= 5; i++) put(frame, 8, i, (bits >>> i) & 1, true);
+    put(frame, 8, 7, (bits >>> 6) & 1, true);
+    put(frame, 8, 8, (bits >>> 7) & 1, true);
+    put(frame, 7, 8, (bits >>> 8) & 1, true);
+    for (i = 9; i < 15; i++) put(frame, 14 - i, 8, (bits >>> i) & 1, true);
+    for (i = 0; i < 8; i++) put(frame, size - 1 - i, 8, (bits >>> i) & 1, true);
+    for (i = 8; i < 15; i++) put(frame, 8, size - 15 + i, (bits >>> i) & 1, true);
+    put(frame, 8, size - 8, 1, true);
+  }
+
+  function drawVersionBits(frame) {
+    if (frame.version < 7) return;
+    var rem = frame.version << 12;
+    for (var i = 17; i >= 12; i--) if ((rem >>> i) & 1) rem ^= 0x1F25 << (i - 12);
+    var bits = (frame.version << 12) | rem, size = frame.size;
+    for (var b = 0; b < 18; b++) {
+      var a = size - 11 + (b % 3), c = Math.floor(b / 3), on = (bits >>> b) & 1;
+      put(frame, a, c, on, true); put(frame, c, a, on, true);
+    }
+  }
+
+  function drawCodewords(frame, codewords) {
+    var bits = [], i, b;
+    for (i = 0; i < codewords.length; i++) for (b = 7; b >= 0; b--) bits.push((codewords[i] >>> b) & 1);
+    var index = 0, upward = true, size = frame.size;
+    for (var right = size - 1; right >= 1; right -= 2) {
+      if (right === 6) right = 5;                       // the vertical timing column is skipped
+      for (var step = 0; step < size; step++) {
+        var y = upward ? size - 1 - step : step;
+        for (var k = 0; k < 2; k++) {
+          var x = right - k;
+          if (frame.fn[y * size + x] === 1) continue;
+          put(frame, x, y, index < bits.length ? bits[index] : 0, false);
+          index++;
+        }
+      }
+      upward = !upward;
+    }
+  }
+
+  function applyMask(frame, mask) {
+    var test = MASKS[mask], size = frame.size;
+    for (var y = 0; y < size; y++) for (var x = 0; x < size; x++) {
+      if (frame.fn[y * size + x] === 1) continue;
+      if (test(y, x)) frame.dark[y * size + x] ^= 1;
+    }
+  }
+
+  function penalty(frame) {
+    var size = frame.size, score = 0, darkCount = 0, x, y, run, i;
+    var at = function (xx, yy) { return frame.dark[yy * size + xx]; };
+    for (y = 0; y < size; y++) {                       // rule 1: runs of five or more
+      run = 1;
+      for (x = 1; x < size; x++) {
+        if (at(x, y) === at(x - 1, y)) run++;
+        else { if (run >= 5) score += 3 + (run - 5); run = 1; }
+      }
+      if (run >= 5) score += 3 + (run - 5);
+    }
+    for (x = 0; x < size; x++) {
+      run = 1;
+      for (y = 1; y < size; y++) {
+        if (at(x, y) === at(x, y - 1)) run++;
+        else { if (run >= 5) score += 3 + (run - 5); run = 1; }
+      }
+      if (run >= 5) score += 3 + (run - 5);
+    }
+    for (y = 0; y < size - 1; y++) {                   // rule 2: 2x2 blocks of one colour
+      for (x = 0; x < size - 1; x++) {
+        var c = at(x, y);
+        if (c === at(x + 1, y) && c === at(x, y + 1) && c === at(x + 1, y + 1)) score += 3;
+      }
+    }
+    // rule 3: the finder-like sequence 1:1:3:1:1 with four light modules on one side, 40 each
+    var patterns = [[1, 0, 1, 1, 1, 0, 1, 0, 0, 0, 0], [0, 0, 0, 0, 1, 0, 1, 1, 1, 0, 1]];
+    function matchesAt(line, start, pattern) {
+      for (var p = 0; p < 11; p++) if (line[start + p] !== pattern[p]) return false;
+      return true;
+    }
+    function countIn(line) {
+      var hits = 0;
+      for (var s = 0; s + 11 <= line.length; s++) {
+        for (var i = 0; i < patterns.length; i++) if (matchesAt(line, s, patterns[i])) hits++;
+      }
+      return hits;
+    }
+    var line = [];
+    for (y = 0; y < size; y++) {
+      line.length = 0;
+      for (x = 0; x < size; x++) line.push(at(x, y));
+      score += 40 * countIn(line);
+    }
+    for (x = 0; x < size; x++) {
+      line.length = 0;
+      for (y = 0; y < size; y++) line.push(at(x, y));
+      score += 40 * countIn(line);
+    }
+    for (i = 0; i < frame.dark.length; i++) darkCount += frame.dark[i];   // rule 4: dark proportion
+    var percent = (darkCount * 100) / (size * size);
+    score += 10 * Math.floor(Math.abs(percent - 50) / 5);
+    return score;
+  }
+
+  function encode(text) {
+    var bytes = new TextEncoder().encode(text);
+    var version = 0;
+    var countBits = function (v) { return v >= 10 ? 16 : 8; };   // byte mode, ISO/IEC 18004 Table 3
+    for (var v = 1; v <= 10; v++) {
+      // payload must fit in the version's data codewords once the mode indicator and the counter
+      // of THAT version have taken their bits - subtracted once, not twice.
+      var room = (ECB_M[v][1] * ECB_M[v][2] + ECB_M[v][3] * ECB_M[v][4]) * 8 - 4 - countBits(v);
+      if (bytes.length * 8 <= room) { version = v; break; }
+    }
+    if (version === 0) throw new Error("QR: text too long for versions 1-10 (" + bytes.length + " bytes)");
+    var table = ECB_M[version];
+    var codewords = interleave(dataCodewords(bytes, table[1] * table[2] + table[3] * table[4],
+                                             countBits(version)), table);
+    var best = null;
+    for (var mask = 0; mask < 8; mask++) {
+      var frame = newFrame(version);
+      drawFunctionPatterns(frame);            // finders, timing, alignment, format and version areas
+      drawCodewords(frame, codewords);        // only into the modules all of those left free
+      applyMask(frame, mask);                 // skips every reserved module, so these stay readable
+      drawFormatBits(frame, mask);            // now the real mask, over the placeholder from before
+      var score = penalty(frame);
+      if (best === null || score < best.score) best = { score: score, matrix: frame };
+    }
+    return best.matrix;
+  }
+
+  function draw(canvas, frame, modulePixels) {
+    var quiet = 4, side = (frame.size + 2 * quiet) * modulePixels;
+    canvas.width = side;
+    canvas.height = side;
+    canvas.style.width = side + "px";
+    canvas.style.height = side + "px";
+    var ctx = canvas.getContext("2d");
+    ctx.fillStyle = "#F4F4F0";
+    ctx.fillRect(0, 0, side, side);
+    ctx.fillStyle = "#000000";
+    for (var y = 0; y < frame.size; y++) for (var x = 0; x < frame.size; x++) {
+      if (frame.dark[y * frame.size + x]) {
+        ctx.fillRect((x + quiet) * modulePixels, (y + quiet) * modulePixels, modulePixels, modulePixels);
+      }
+    }
+  }
+  return { encode: encode, draw: draw };
+})();
+</script>
+
+<script type="module">
+/* ------------------------------------------------------------------ config */
+const ORT_VERSION = "1.31.1";
+const ORT_BASES = [
+  "https://cdn.jsdelivr.net/npm/onnxruntime-web@" + ORT_VERSION + "/dist/",
+  "https://unpkg.com/onnxruntime-web@" + ORT_VERSION + "/dist/"
+];
+// The GitHub Pages address of this page. Left empty in the notebook folder on purpose:
+// the page then uses its own address (location.href), which IS the Pages URL once deployed.
+const CANONICAL_URL = "";
+// Each entry pairs a model with the JSON of expected probabilities for check_image.jpg,
+// produced by the very model that is named next to it.
+const MODELS = [
+  { file: "leaf_model.onnx", info: "model_info.json", expected: "check_expected.json",
+    label: "leaf_model.onnx - Task 2" },
+  { file: "best_leaf_model.onnx", info: "best_model_info.json", expected: "best_check_expected.json",
+    label: "best_leaf_model.onnx - Task 4" }
+];
+const MIME_OK = ["image/jpeg", "image/png", "image/webp"];
+const EXTENSION_OK = ["jpg", "jpeg", "png", "webp"];   // the same three types, for when MIME is not reported
+const MAX_BYTES = 15 * 1024 * 1024;
+const TOLERANCE = 1e-3;
+
+/* ------------------------------------------------------------------ dom */
+const $ = (id) => document.getElementById(id);
+// Anything taken from a file, a JSON or the browser's own resource list goes into a table cell below;
+// escaping keeps a "<" or a "&" in such a string a character instead of markup.
+const esc = (value) => String(value).replace(/[&<>"']/g,
+  (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[character]));
+const video = $("video"), seeCtx = $("see").getContext("2d");
+const statusEl = $("status"), barsEl = $("bars");
+const startBtn = $("startBtn"), stopBtn = $("stopBtn"), checkBtn = $("checkBtn"), verifyBtn = $("verifyBtn");
+const fileInput = $("file"), modelSelect = document.createElement("select");
+
+function status(text, kind) {
+  statusEl.textContent = text;
+  statusEl.className = kind || "";
+}
+
+/* ------------------------------------------------------------------ url audit (for REVIEW.md point 4) */
+const KNOWN = [
+  [/jsdelivr\.net\/npm\/onnxruntime-web/, "ONNX Runtime Web (CDN, pinned version)"],
+  [/unpkg\.com\/onnxruntime-web/, "ONNX Runtime Web (CDN fallback)"],
+  [/ort-wasm/, "WebAssembly engine for the inference"],
+  [/\.onnx(\?|$)/, "the leaf model"],
+  [/model_info\.json|best_model_info\.json/, "class names and preprocessing constants"],
+  [/check_image\.jpg/, "reference photo"],
+  [/check_expected\.json|best_check_expected\.json/, "reference probabilities"]
+];
+function renderUrlTable() {
+  // Everything this document asked the network for, in the browser's own accounting.
+  const rows = performance.getEntriesByType("resource").map((entry) => {
+    const known = KNOWN.find((pair) => pair[0].test(entry.name));
+    return { url: entry.name,
+             bytes: entry.transferSize ? (entry.transferSize / 1024).toFixed(0) + " KB" : "cached",
+             what: known ? known[1] : "other" };
+  });
+  if (!rows.length) return;
+  $("urlTable").innerHTML = rows.map((r) =>
+    `<tr><td class="url">${esc(r.url)}</td><td>${esc(r.bytes)}</td><td class="url">${esc(r.what)}</td></tr>`).join("");
+}
+
+/* ------------------------------------------------------------------ runtime + model */
+let ort = null, session = null, modelInfo = null, activeModel = MODELS[0];
+let input = null, workCanvas = null, workCtx = null, plane = 0, lut = null;
+
+async function loadRuntime() {
+  let lastError = null;
+  for (const base of ORT_BASES) {
+    try {
+      const module = await import(base + "ort.min.mjs");
+      // GitHub Pages cannot send COOP/COEP headers, so SharedArrayBuffer is unavailable there.
+      // One thread is also the reliable choice on a phone browser.
+      module.env.wasm.numThreads = 1;
+      module.env.wasm.proxy = false;
+      module.env.wasm.wasmPaths = base;
+      module.env.logLevel = "warning";
+      ort = module;
+      $("dEngine").textContent = "onnxruntime-web " + ORT_VERSION + ", wasm execution provider, " +
+        module.env.wasm.numThreads + " thread(s), from " + new URL(base).host;
+      $("dCoi").textContent = String(self.crossOriginIsolated === true) +
+        " - shared memory off, one wasm thread";
+      return;
+    } catch (error) { lastError = error; }
+  }
+  throw new Error("could not load ONNX Runtime Web from any CDN: " + (lastError && lastError.message));
+}
+
+async function loadInfo(chosen) {
+  const answer = await fetch(chosen.info, { cache: "no-cache" });
+  if (!answer.ok) throw new Error("HTTP " + answer.status + " for " + chosen.info);
+  const info = await answer.json();
+  for (const key of ["classes", "input_size", "mean", "std"]) {
+    if (!info[key]) throw new Error(chosen.info + " has no \"" + key + "\"");
+  }
+  if (info.input_size !== 96) console.warn("input_size is not 96; the tensors follow it anyway");
+  return info;
+}
+
+function buildBuffers(info) {
+  const size = info.input_size;
+  plane = size * size;
+  input = new Float32Array(3 * plane);                 // allocated once, reused by every frame
+  $("see").width = size;
+  $("see").height = size;
+  workCanvas = document.createElement("canvas");
+  workCanvas.width = size;
+  workCanvas.height = size;
+  workCtx = workCanvas.getContext("2d", { willReadFrequently: true });
+  // (byte/255 - mean) / std depends on the byte alone, so it is evaluated once per possible byte
+  // value instead of once per pixel: 768 evaluations for the whole app instead of 27 648 per frame.
+  // The result is identical to the same per-pixel expression in this file (JS computes it in double
+  // precision, the Float32Array rounds once). Measured against PyTorch's per-step float32 chain the
+  // largest deviation is ~5e-07 per element - five orders below the 1e-3 the self-test allows.
+  lut = [0, 1, 2].map((channel) => {
+    const table = new Float32Array(256);
+    for (let byte = 0; byte < 256; byte++) table[byte] = (byte / 255.0 - info.mean[channel]) / info.std[channel];
+    return table;
+  });
+  $("dTensor").textContent = "Float32Array(1 x 3 x " + size + " x " + size + ") = " + input.length + " values, reused every frame";
+  // the caption states the size the model actually asked for instead of repeating 96 by hand
+  $("seeCaption").textContent = "What the model sees: central square, " + size + " × " + size;
+  $("modelMeta").textContent = "model: " + activeModel.file + " | classes " + info.classes.join(", ") +
+    " | input " + size + "x" + size + " | mean " + info.mean.join(", ") + " | std " + info.std.join(", ");
+}
+
+function buildBars(classes) {
+  // Built node by node with textContent instead of a template string: the class names come from a
+  // JSON file, and a name containing < or & must not be able to become markup in this page.
+  barsEl.textContent = "";
+  for (const name of classes) {
+    const label = document.createElement("span");
+    label.className = "name";
+    label.textContent = name;
+    const fill = document.createElement("div");
+    fill.className = "fill";
+    const track = document.createElement("div");
+    track.className = "track";
+    track.appendChild(fill);
+    const value = document.createElement("span");
+    value.className = "val";
+    value.textContent = "0.000";
+    const row = document.createElement("div");
+    row.className = "row";
+    row.dataset.class = name;                     // also safe: an attribute value, not parsed HTML
+    row.append(label, track, value);
+    barsEl.appendChild(row);
+  }
+}
+
+async function createSession(chosen) {
+  // Everything is built BEFORE the old session is let go. While a second model is being fetched and
+  // compiled (6 MB, a second or two on a phone) the page must still be able to classify; releasing the
+  // session first left every inference path dereferencing null for the whole duration of the switch.
+  status("Loading " + chosen.file + ".");
+  const info = await loadInfo(chosen);
+  const answer = await fetch(chosen.file);
+  if (!answer.ok) throw new Error("HTTP " + answer.status + " for " + chosen.file);
+  const bytes = new Uint8Array(await answer.arrayBuffer());
+  const started = performance.now();
+  // The bytes are handed over directly: the status of the request is then known and checked above,
+  // and the runtime never makes a second, uncontrolled request for the same file.
+  const created = await ort.InferenceSession.create(bytes, { executionProviders: ["wasm"], graphOptimizationLevel: "all" });
+  // The swap happens inside the inference queue, so no run is in flight while the shared buffers and
+  // the model globals change under it and the previous weights are released.
+  const previous = await runExclusive(() => {
+    const outgoing = session;
+    session = created;
+    activeModel = chosen;
+    modelInfo = info;
+    buildBuffers(info);
+    buildBars(info.classes);
+    return outgoing;
+  });
+  if (previous) previous.release();
+  $("dModel").textContent = chosen.file + " (" + (bytes.length / 1e6).toFixed(2) + " MB), " +
+    created.inputNames[0] + " -> " + created.outputNames.join(", ");
+  $("dSession").textContent = "ready in " + Math.round(performance.now() - started) + " ms, execution provider wasm";
+  // While the camera streams, this banner is the only place that says the camera is still live, so
+  // a model switch in the middle of a session reports both instead of erasing the camera.
+  status(streaming ? "Camera running - " + chosen.file + " is loaded and answering frames."
+                   : "Model " + chosen.file + " is loaded and running in the browser.", "ok");
+  renderUrlTable();                       // the model just fetched belongs in the loaded-URL table
+}
+
+/* ------------------------------------------------------------------ preprocessing
+   Exactly the notebook's ToTensor() + Normalize(mean, std) of the central square:
+   S = min(W, H), the square starts at (floor((W - S) / 2), floor((H - S) / 2)), it is
+   resized onto a 96 x 96 canvas, then RGBA becomes planar 3 x 96 x 96 with
+   out[c, y, x] = (byte / 255 - mean[c]) / std[c].
+   ------------------------------------------------------------------ */
+function toTensor(source) {
+  const width = source.naturalWidth || source.videoWidth || source.width;
+  const height = source.naturalHeight || source.videoHeight || source.height;
+  if (!width || !height) throw new Error("the image has no size - it did not decode");
+  const size = modelInfo.input_size;
+  const side = Math.min(width, height);
+  const x0 = Math.floor((width - side) / 2);
+  const y0 = Math.floor((height - side) / 2);
+  workCtx.imageSmoothingEnabled = true;
+  workCtx.imageSmoothingQuality = "high";
+  workCtx.fillStyle = "#000000";
+  workCtx.fillRect(0, 0, size, size);
+  workCtx.drawImage(source, x0, y0, side, side, 0, 0, size, size);
+  const rgba = workCtx.getImageData(0, 0, size, size).data;
+  for (let i = 0, rgb = 0; i < plane; i++, rgb += 4) {
+    input[i] = lut[0][rgba[rgb]];
+    input[plane + i] = lut[1][rgba[rgb + 1]];
+    input[2 * plane + i] = lut[2][rgba[rgb + 2]];
+  }
+  seeCtx.drawImage(workCanvas, 0, 0);                 // show what the model is fed
+  return input;
+}
+
+// check_image.jpg is 96 x 96, so the self-test hands this function a picture that needs no crop and no
+// resize - the one production path on a phone (1280x720, 750x1000) is not covered by that comparison.
+// The ARITHMETIC of the crop can still be checked, on the shapes a phone really produces and without
+// any resampling involved: the square must exist, start inside the picture, stay inside it, and be
+// centred (centred to the pixel, or to within one pixel when the leftover is odd).
+function cropGeometryCheck() {
+  const shapes = [[96, 96], [100, 96], [96, 100], [1280, 720], [720, 1280], [750, 1000], [1080, 1080],
+                  [4000, 3000]];
+  const ok = shapes.every((shape) => {
+    const width = shape[0], height = shape[1];
+    const side = Math.min(width, height);
+    const x0 = Math.floor((width - side) / 2), y0 = Math.floor((height - side) / 2);
+    const right = width - side - x0, bottom = height - side - y0;
+    return side > 0 && x0 >= 0 && y0 >= 0 && x0 + side <= width && y0 + side <= height &&
+      Math.abs(right - x0) <= 1 && Math.abs(bottom - y0) <= 1;
+  });
+  return { ok: ok, shapes: shapes.length };
+}
+
+// Checked on every single inference, before the model sees anything: exact shape, float32,
+// and no NaN or Inf anywhere in the buffer.
+function assertTensor(tensor, size) {
+  const dims = Array.from(tensor.dims).join(",");
+  if (dims !== "1,3," + size + "," + size) throw new Error("tensor dims are " + dims + ", expected 1,3," + size + "," + size);
+  const values = tensor.data;
+  if (!(values instanceof Float32Array)) throw new Error("tensor data is not a Float32Array");
+  if (values.length !== 3 * size * size) throw new Error("tensor holds " + values.length + " values, expected " + (3 * size * size));
+  for (let i = 0; i < values.length; i++) {
+    if (!Number.isFinite(values[i])) throw new Error("tensor holds NaN or Inf at index " + i);
+  }
+}
+
+// One inference at a time. toTensor() writes into a single pre-allocated Float32Array (pre-allocating
+// it is the point) and ort.Tensor wraps that buffer without copying it, so two runs overlapping on it
+// would read each other's pixels: a camera frame classified at the same moment as an upload could
+// print a probability vector that belongs to neither picture. Every path that classifies goes
+// through this queue - camera frame, uploaded file, RUN CHECK IMAGE and VERIFY alike.
+let busy = Promise.resolve();
+function runExclusive(job) {
+  const result = busy.then(() => job());
+  busy = result.then(() => {}, () => {});            // one failed run must not jam the queue
+  return result;
+}
+
+// Wait for the model instead of assuming it is there. On the first load `ready` is still pending and
+// genuinely waits; if start-up failed there is nothing to wait for, and that should be said out loud
+// rather than throwing "cannot read properties of null" three panels deep.
+async function waitForSession() {
+  if (!session) await ready;
+  if (!session) throw new Error("no model is loaded - reload the page");
+}
+
+async function classify(source) {
+  await waitForSession();
+  const size = modelInfo.input_size;
+  const tensor = new ort.Tensor("float32", toTensor(source), [1, 3, size, size]);
+  assertTensor(tensor, size);
+  const feeds = {};
+  feeds[session.inputNames[0]] = tensor;
+  const started = performance.now();
+  const results = await session.run(feeds);
+  const logits = results[session.outputNames[0]].data;
+  const milliseconds = performance.now() - started;
+  // softmax, in float64 so that the printed digits are the model's own
+  const exponentials = new Float64Array(logits.length);
+  let highest = -Infinity, total = 0;
+  for (let i = 0; i < logits.length; i++) highest = Math.max(highest, logits[i]);
+  for (let i = 0; i < logits.length; i++) { exponentials[i] = Math.exp(logits[i] - highest); total += exponentials[i]; }
+  const probabilities = modelInfo.classes.map((name, i) => ({ name, probability: exponentials[i] / total }));
+  $("dInfer").textContent = milliseconds.toFixed(1) + " ms (wasm, 1 thread) for 1 x 3 x " + size + " x " + size;
+  return probabilities;
+}
+
+let inferenceCount = 0;                       // every classification, camera frames and stills alike
+function showProbabilities(probabilities, label) {
+  const best = probabilities.reduce((a, b) => (b.probability > a.probability ? b : a), probabilities[0]);
+  for (const row of barsEl.children) {
+    const found = probabilities.find((p) => p.name === row.dataset.class);
+    if (!found) continue;
+    row.querySelector(".fill").style.width = (found.probability * 100).toFixed(1) + "%";
+    row.querySelector(".val").textContent = found.probability.toFixed(3);
+    row.classList.toggle("top", found.name === best.name);
+  }
+  // textContent, never innerHTML: `label` carries a file name chosen by whoever holds the phone, and
+  // names like "leaf<b>.jpg" or "<img src=x onerror=…>.jpg" are perfectly legal on Android and Linux.
+  const headline = $("headline");
+  headline.textContent = "top-1 ";
+  const strongest = document.createElement("b");
+  strongest.textContent = best.name;
+  headline.append(strongest, " at " + best.probability.toFixed(3));
+  if (label) headline.append(" · " + label);
+  $("dFrames").textContent = String(++inferenceCount);
+}
+
+/* ------------------------------------------------------------------ camera */
+let stream = null, streaming = false, inferring = false, rafId = 0;
+
+// The assignment asks for an automatic fallback to file upload, not only a sentence describing one:
+// when the camera cannot be had, the upload control is scrolled into view and outlined in amber.
+function pointAtUpload() {
+  const label = document.querySelector(".filelabel");
+  if (!label) return;
+  label.scrollIntoView({ block: "center" });
+  label.classList.add("flash");
+  setTimeout(() => label.classList.remove("flash"), 3000);
+}
+
+function cameraHelp(error) {
+  const name = error && error.name ? error.name : "unknown";
+  if (name === "InsecureContext") {
+    return "This address is not secure, so the browser will not hand out a camera at all " +
+      "(navigator.mediaDevices only exists on https). Open the https:// GitHub Pages address of this " +
+      "page on the phone, or use UPLOAD IMAGE, which needs no permission.";
+  }
+  if (name === "NoCameraApi") {
+    return "This browser offers no camera API at all - navigator.mediaDevices.getUserMedia is missing, " +
+      "so the live camera cannot be started here. UPLOAD IMAGE works without it.";
+  }
+  if (name === "NotAllowedError" || name === "SecurityError") {
+    return "The camera was refused (" + name + "). Allow it in the browser dialog or in the site settings " +
+      "of this page, then press START CAMERA again. Meanwhile UPLOAD IMAGE works without any permission.";
+  }
+  if (name === "NotFoundError" || name === "OverconstrainedError") {
+    return "No usable camera was found (" + name + "). This device or tab has no camera to give - " +
+      "use UPLOAD IMAGE instead.";
+  }
+  if (name === "NotReadableError") {
+    return "The camera is busy or broken (" + name + "). Close the other app that uses it (video call, " +
+      "another tab) and try again, or use UPLOAD IMAGE.";
+  }
+  if (name === "AbortError") {
+    return "The browser would not start the picture (" + name + "). This usually means the page lost the " +
+      "tap that permission needs - press START CAMERA once more, or use UPLOAD IMAGE.";
+  }
+  return "Camera failed (" + name + ": " + (error.message || "") + "). Use UPLOAD IMAGE instead.";
+}
+
+function watchTrack(track) {
+  // iOS and Android end or mute the video track when another app takes the camera. Without these
+  // listeners the loop quietly stops inferring, the last picture stays on screen and the banner keeps
+  // saying the camera is running - a frozen preview that looks alive is the worst failure to ship.
+  if (!track) return;
+  const lost = (why) => { if (streaming) stopCamera("the camera " + why); };
+  track.addEventListener("ended", () => lost("was ended by the system or taken by another app"));
+  track.addEventListener("mute", () => lost("went mute, usually because another app took it"));
+}
+
+function showRealFrameRatio() {
+  // Give the preview the real frame ratio, so the box does not jump when the stream attaches.
+  if (video.videoWidth && video.videoHeight) video.style.aspectRatio = video.videoWidth + " / " + video.videoHeight;
+}
+
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    // Without https the API simply is not exposed; isSecureContext says which of the two it is.
+    status(cameraHelp({ name: window.isSecureContext ? "NoCameraApi" : "InsecureContext" }), "err");
+    pointAtUpload();
+    return;
+  }
+  startBtn.disabled = true;                       // also marks "a start is in progress", read below
+  status("Asking the browser for the rear camera.");
+  let granted = null;
+  try {
+    try {
+      granted = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        audio: false
+      });
+    } catch (error) {
+      if (error && error.name === "OverconstrainedError") {   // phone without the requested mode/size
+        granted = await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
+      } else throw error;
+    }
+    if (!startBtn.disabled) {
+      // STOP CAMERA, or a screen lock, ran while the browser was asking for permission. Hand the
+      // camera straight back instead of starting a stream nobody asked for any more.
+      granted.getTracks().forEach((track) => track.stop());
+      status("Camera start was cancelled while the browser was asking. Press START CAMERA again.", "warn");
+      return;
+    }
+    stream = granted;
+    watchTrack(stream.getVideoTracks()[0]);
+    video.srcObject = stream;
+    video.addEventListener("loadedmetadata", showRealFrameRatio, { once: true });
+    await video.play();
+    streaming = true;
+    stopBtn.disabled = false;
+    status("Camera running. Frames are classified as fast as this phone manages; the ones it cannot " +
+           "keep up with are skipped, never queued.", "ok");
+    cancelAnimationFrame(rafId);
+    rafId = requestAnimationFrame(cameraLoop);
+  } catch (error) {
+    // A camera that was already granted is always given back: the indicator must not stay on behind
+    // a failure, and the next START must not overwrite a stream that can no longer be stopped.
+    if (granted) granted.getTracks().forEach((track) => track.stop());
+    stream = null;
+    video.srcObject = null;
+    startBtn.disabled = false;
+    status(cameraHelp(error), "err");
+    pointAtUpload();
+  }
+}
+
+function stopCamera(reason) {
+  streaming = false;
+  cancelAnimationFrame(rafId);
+  inferring = false;                              // the queue below makes a late run harmless
+  if (stream) stream.getTracks().forEach((track) => track.stop());
+  stream = null;
+  video.srcObject = null;
+  startBtn.disabled = false;
+  stopBtn.disabled = true;
+  // The reason has to survive the stop. It used to be written first and then overwritten here by
+  // "Camera stopped.", so a camera that died mid-run was indistinguishable from a tidy one.
+  status(reason ? "Camera stopped: " + reason + ". Press START CAMERA to try again." : "Camera stopped.", "warn");
+}
+
+// requestAnimationFrame plus the inferring gate: a slow phone never queues frames up, it simply drops
+// the ones it cannot handle. The run itself joins the shared inference queue, so an upload or a
+// self-test can never land on the same input buffer while this frame is being classified.
+async function cameraLoop() {
+  if (!streaming) return;
+  if (!inferring && video.readyState >= video.HAVE_ENOUGH_DATA) {
+    inferring = true;
+    try {
+      const probabilities = await runExclusive(() => classify(video));
+      if (streaming) showProbabilities(probabilities, "live frame");
+    } catch (error) {
+      stopCamera("inference failed: " + error.message);
+    }
+    inferring = false;
+  }
+  rafId = requestAnimationFrame(cameraLoop);
+}
+
+/* ------------------------------------------------------------------ still images */
+function validateFile(file) {
+  if (!file) return "No file was chosen.";
+  if (file.size === 0) return "That file is empty (0 bytes).";
+  if (file.size >= MAX_BYTES) return "That file is " + (file.size / 1024 / 1024).toFixed(1) +
+    " MB; the page takes files smaller than 15 MB.";
+  const extension = (file.name.split(".").pop() || "").toLowerCase();
+  // file.type is an empty string whenever the browser cannot name the type - a JPEG renamed .txt, a
+  // .bmp from some pickers - and skipping the check in that case would let anything through on the
+  // browser's content sniffing while this page claims three accepted types. With no MIME type the
+  // extension is the only claim the file makes, so that claim is checked against the same list.
+  if (file.type ? MIME_OK.indexOf(file.type) === -1 : EXTENSION_OK.indexOf(extension) === -1) {
+    return "That is a " + (file.type || (extension ? "." + extension : "typeless")) +
+      " file; the page accepts image/jpeg, image/png and image/webp.";
+  }
+  return null;
+}
+
+function decodeToImage(url) {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("the browser could not decode this image - it is corrupt or not a picture"));
+    image.src = url;
+  });
+}
+
+async function handleFile(file) {
+  const problem = validateFile(file);
+  if (problem) { status(problem, "err"); return; }
+  const url = URL.createObjectURL(file);
+  try {
+    const image = await decodeToImage(url);
+    const label = file.name + " (" + image.naturalWidth + "x" + image.naturalHeight + ")";
+    // queued with everything else: an upload that arrived while the camera streams must not share the
+    // one pre-allocated input buffer with the frame being classified
+    const probabilities = await runExclusive(() => classify(image));
+    showProbabilities(probabilities, label);
+    status("Classified " + file.name + " locally - it was never uploaded.", "ok");
+  } catch (error) {
+    status(error.message, "err");
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+async function loadLocalAsset(path) {
+  const answer = await fetch(path);
+  if (!answer.ok) throw new Error("HTTP " + answer.status + " for " + path);
+  return URL.createObjectURL(await answer.blob());
+}
+
+async function runCheckImage() {
+  checkBtn.disabled = true;
+  try {
+    const url = await loadLocalAsset("check_image.jpg");
+    try {
+      const image = await decodeToImage(url);
+      const probabilities = await runExclusive(() => classify(image));
+      showProbabilities(probabilities, "check_image.jpg");
+      status("check_image.jpg classified in the browser. Press VERIFY to compare it with the notebook.", "ok");
+    } finally { URL.revokeObjectURL(url); }
+  } catch (error) {
+    status(error.message, "err");
+  } finally {
+    checkBtn.disabled = false;
+    renderUrlTable();                    // this button fetched check_image.jpg, so the table must show it
+  }
+}
+
+/* ------------------------------------------------------------------ self-test */
+async function verifyAgainstExpected() {
+  verifyBtn.disabled = true;
+  const box = $("verifyBox");
+  try {
+    const answer = await fetch(activeModel.expected, { cache: "no-cache" });
+    if (!answer.ok) throw new Error("HTTP " + answer.status + " for " + activeModel.expected);
+    const expected = await answer.json();
+    const url = await loadLocalAsset("check_image.jpg");
+    let probabilities, pixels = "an unknown size";
+    try {
+      const image = await decodeToImage(url);
+      pixels = image.naturalWidth + " x " + image.naturalHeight + " pixels";
+      probabilities = await runExclusive(() => classify(image));
+    } finally { URL.revokeObjectURL(url); }
+
+    // The self-test classifies check_image.jpg, so panel 03 shows that classification too.
+    showProbabilities(probabilities, "check_image.jpg, self-test");
+    // A class the reference file does not name is a failure, never a free pass. Written as a NaN
+    // difference it would have been silently ignored, because every comparison with NaN is false -
+    // a reference JSON missing one class could still print PASS on the three it had.
+    const missing = probabilities.filter((entry) => typeof expected[entry.name] !== "number")
+      .map((entry) => entry.name);
+    const unexpected = Object.keys(expected).filter((name) => modelInfo.classes.indexOf(name) === -1);
+    let maxDiff = 0, worst = "";
+    const rows = probabilities.map((entry) => {
+      const reference = expected[entry.name];
+      const usable = typeof reference === "number";
+      const diff = usable ? Math.abs(reference - entry.probability) : null;
+      if (diff !== null && diff > maxDiff) { maxDiff = diff; worst = entry.name; }
+      return `<tr><td>${esc(entry.name)}</td>` +
+        `<td>${usable ? reference.toExponential(6) : "missing"}</td>` +
+        `<td>${entry.probability.toExponential(6)}</td><td>${diff === null ? "-" : diff.toExponential(2)}</td>` +
+        `<td>${usable && reference.toFixed(3) === entry.probability.toFixed(3) ? "yes" : "no"}</td></tr>`;
+    });
+    const expectedTop = Object.keys(expected).reduce((a, b) => (expected[b] > expected[a] ? b : a), Object.keys(expected)[0]);
+    const gotTop = probabilities.reduce((a, b) => (b.probability > a.probability ? b : a), probabilities[0]).name;
+    const threeDecimals = probabilities.every((p) => typeof expected[p.name] === "number" &&
+      expected[p.name].toFixed(3) === p.probability.toFixed(3));
+    const crop = cropGeometryCheck();
+    const cropSaid = crop.ok ? "all of them inside the picture and centred" : "SOME OF THEM LEFT THE PICTURE";
+    const passed = missing.length === 0 && unexpected.length === 0 && maxDiff <= TOLERANCE &&
+      expectedTop === gotTop && crop.ok;
+    box.innerHTML =
+      `<p style="margin:0 0 10px"><span class="badge ${passed ? "pass" : "fail"}">${passed ? "PASS" : "FAIL"}</span>` +
+      `&nbsp; max difference <b>${maxDiff.toExponential(3)}</b> on "${esc(worst)}", limit ${TOLERANCE}, ` +
+      `top-1 ${esc(gotTop)} vs ${esc(expectedTop)} expected, identical to three decimals: ${threeDecimals ? "yes" : "no"}. ` +
+      `${probabilities.length} of ${probabilities.length} classes compared.</p>` +
+      (missing.length || unexpected.length
+        ? `<p class="note" style="margin:0 0 10px">The reference file does not fit this model - missing: ` +
+          `${esc(missing.join(", ") || "nothing")}, not a class of this model: ` +
+          `${esc(unexpected.join(", ") || "nothing")}.</p>`
+        : "") +
+      `<p class="note" style="margin:0 0 10px">Model ${esc(activeModel.file)}, reference ${esc(activeModel.expected)}; ` +
+      `check_image.jpg is ${esc(pixels)}. Both columns are the same JPEG after the same central crop, resize ` +
+      `and standardisation, so this compares the model and the normalisation. Because that file is already ` +
+      `${esc(pixels)}, the resize itself is a 1:1 copy here and is not what this badge proves; the crop ` +
+      `arithmetic is checked separately on ${crop.shapes} frame shapes a phone produces (${cropSaid}), and the resized picture you can see in panel 01 ` +
+      `is the live evidence of the downscale. The residue is float32 arithmetic in wasm versus PyTorch, plus ` +
+      `at most ~5e-07 from computing the normalisation table in double precision.</p>` +
+      `<table><thead><tr><th>class</th><th>notebook</th><th>this page</th><th>abs diff</th><th>3 dp</th></tr></thead>` +
+      `<tbody>${rows.join("")}</tbody></table>`;
+    status(passed ? "Self-test PASS: the page agrees with the notebook."
+                  : "Self-test FAIL: the numbers differ by more than " + TOLERANCE + ".", passed ? "ok" : "err");
+  } catch (error) {
+    box.innerHTML = '<p class="note">Self-test could not run: ' + esc(error.message) + "</p>";
+    status("Self-test could not run: " + error.message, "err");
+  } finally {
+    verifyBtn.disabled = false;
+    renderUrlTable();
+  }
+}
+
+/* ------------------------------------------------------------------ model picker */
+async function availableModels() {
+  const present = [];
+  for (const model of MODELS) {
+    try {
+      const answer = await fetch(model.file, { method: "HEAD" });
+      if (answer.ok) present.push(model);
+    } catch (error) { /* not shipped next to this page, skip it */ }
+  }
+  return present.length ? present : [MODELS[0]];
+}
+
+async function buildPicker() {
+  const models = await availableModels();
+  if (models.length < 2) return;                      // one model only: nothing to choose
+  modelSelect.setAttribute("aria-label", "Model to run");
+  models.forEach((model, index) => {
+    const option = document.createElement("option");
+    option.value = String(index);
+    option.textContent = model.label;
+    modelSelect.appendChild(option);
+  });
+  // One switch at a time, and always the LAST one asked for. createSession takes a second (6 MB to
+  // fetch and compile) and the completion order of two overlapping switches is not the order they were
+  // chosen in, which could leave the page running one model while calling the other one's reference
+  // numbers - a confident FAIL badge caused by a race instead of by anything real.
+  let wanted = null, switching = false;
+  modelSelect.onchange = () => {
+    wanted = models[Number(modelSelect.value)];
+    if (switching) return;
+    switching = true;
+    modelSelect.disabled = true;
+    (async () => {
+      while (wanted) {
+        const target = wanted;
+        wanted = null;
+        try {
+          await createSession(target);
+          $("verifyBox").innerHTML = '<p class="note" style="margin-top:0">Model changed - run VERIFY again.</p>';
+        } catch (error) {
+          status("Could not load " + target.file + ": " + error.message + " - still running " +
+            activeModel.file + ".", "err");
+        }
+      }
+      const shown = models.indexOf(activeModel);     // the control always shows what is really loaded
+      if (shown >= 0) modelSelect.value = String(shown);
+      switching = false;
+      modelSelect.disabled = false;
+    })();
+  };
+  const controls = checkBtn.parentElement;
+  controls.insertBefore(modelSelect, controls.firstChild);
+}
+
+/* ------------------------------------------------------------------ qr */
+function drawQr() {
+  const url = CANONICAL_URL || location.href.split("?")[0].split("#")[0];
+  try {
+    const frame = QR.encode(url);
+    // Integer module size chosen so the code lands near 220 px on screen: big enough for a
+    // phone camera to read, small enough to stay on one screen.
+    const modulePixels = Math.max(3, Math.min(8, Math.floor(220 / (frame.size + 8))));
+    QR.draw($("qr"), frame, modulePixels);
+    $("qrText").textContent = url;
+    $("qrLink").href = url;
+  } catch (error) {
+    $("qrNote").textContent = "QR could not be made: " + error.message;
+    $("qrText").textContent = url;
+    $("qrLink").href = url;
+  }
+}
+
+/* ------------------------------------------------------------------ wiring + start */
+startBtn.addEventListener("click", startCamera);
+stopBtn.addEventListener("click", () => stopCamera());     // wrapped: stopCamera's argument is a reason,
+                                                           // not the click event
+checkBtn.addEventListener("click", runCheckImage);
+verifyBtn.addEventListener("click", verifyAgainstExpected);
+fileInput.addEventListener("change", () => { handleFile(fileInput.files[0]); fileInput.value = ""; });
+// Releasing the camera when the page disappears is deliberate - a phone should not hold the camera
+// behind another app - so the banner says that instead of repeating the STOP button's own words.
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden && streaming) stopCamera("the page went into the background and the camera was released");
+});
+
+// Opening the page as index.html?selftest=1 runs the self-test on its own once the model is ready.
+// It is how browser_check.py drives this page headlessly, and it is also the quickest way for you to
+// check a deployment: open the Pages URL with ?selftest=1 in the address bar and read the badge.
+const wantsSelfTest = new URLSearchParams(location.search).get("selftest") === "1";
+
+const ready = (async () => {
+  drawQr();
+  renderUrlTable();
+  setTimeout(renderUrlTable, 3000);
+  status("Loading ONNX Runtime Web " + ORT_VERSION + " from the CDN.");
+  await loadRuntime();
+  await buildPicker();
+  await createSession(MODELS[0]);
+  if (wantsSelfTest) {
+    await verifyAgainstExpected();
+    await runCheckImage();
+    renderUrlTable();
+    document.body.dataset.selftest = "done";
+  }
+})().catch((error) => {
+  status("Startup failed: " + error.message, "err");
+  $("dSession").textContent = "failed: " + error.message;
+  document.body.dataset.selftest = "error";
+});
+</script>
+</body>
+</html>
